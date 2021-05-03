@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <math.h>
+#include <string.h>
 
 #include "../E2/xv6/include/types.h"
 #include "../E2/xv6/include/fs.h"
@@ -13,11 +14,15 @@
 #include "../E2/xv6/include/stat.h"
 #undef stat
 
+// methods that xv6 used to read indirect block
+uint xint(uint x);
+void rsect(int fsfd, uint sec, void *buf);
+
 int main(int argc, char *argv[]) {
 
     struct superblock *sb;
     struct dinode *dip;
-    // struct dirent *de;
+    struct dirent *de;
 
     // making sure that there is 1 and only 1 argument
     // should be the path to the file system image
@@ -59,7 +64,7 @@ int main(int argc, char *argv[]) {
         if(dip[i].size == 0) {
             continue;
         }
-        // invalid size of not of the right type
+        // invalid size or not of the right type
         // bad inode error
         if(dip[i].size < 0 || (dip[i].type != T_FILE && dip[i].type != T_DIR && dip[i].type != T_DEV)) {
             fprintf(stderr, "ERROR: bad inode.\n");
@@ -81,13 +86,14 @@ int main(int argc, char *argv[]) {
             }
 
             // make sure it's marked as in use by the bit map
-            uint bn = dip[i].addrs[j];
+            /*uint bn = dip[i].addrs[j];
             char *bitmapBlock = mapResult + (BBLOCK(dip[i].addrs[j], sb->ninodes)) * BSIZE;
-            printf("%d\n", bitmapBlock[bn % BPB]);
-            if(!bitmapBlock[bn % BPB]) {
+            int index = bn / sizeof(bitmapBlock[0]);
+            int power = (int)(pow(2, bn % sizeof(bitmapBlock[0])) + 0.5);
+            if(!((int)bitmapBlock[index] & power)) {
                 fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
                 exit(1);
-            }
+            }*/
         }
 
         // if execution reaches here, direct blocks are all valid
@@ -95,16 +101,41 @@ int main(int argc, char *argv[]) {
         if(!dip[i].addrs[NDIRECT]) {
             continue;
         }
+
         uint temp = dip[i].addrs[NDIRECT];
+        uint indirect[NINDIRECT];
+
+        // reads the indirect block address
+        uint y = xint(temp);
+        rsect(fd, y, (char *)indirect);
+
+        // loops through all NINDIRECT addresses and checks to see if they are
+        // a valid block number
         for (j = 0; j < NINDIRECT; j++) {
-            if(!temp) {
+            int indirectBn = indirect[j];
+            // indirect block address not in use
+            if(!indirectBn) {
                 continue;
             }
 
-            if(temp < 0 || temp > sb->nblocks /*|| temp[j] >= NINDIRECT*/) {
+            // checks to see if indirect block is pointing to a valid data
+            // block address
+            if(indirectBn < 0 || indirectBn > sb->nblocks /*|| temp[j] >= NINDIRECT*/) {
                 fprintf(stderr, "ERROR: bad indirect address in inode.\n");
                 exit(1);
             }
+        }
+    }
+
+    de = (struct dirent *)(mapResult + (dip[ROOTINO].addrs[0]) * BSIZE);
+    int size = dip[ROOTINO].size / sizeof(struct dirent *);
+    for(i = 0; i < size; i++, de++) {
+        if(strcmp(de->name, ".") == 0) {
+            if(de->inum != ROOTINO) {
+                fprintf(stderr, "ERROR: root directory does not exist.\n");
+                exit(1);
+            }
+            break;
         }
     }
 
@@ -116,4 +147,29 @@ int main(int argc, char *argv[]) {
     }
 
     return 0;
+}
+
+// included xint and rsect implementations from xv6 - from analyzing mkfs.c
+// this is what allows us to read the block numbers from the indirect
+// block address pointers
+uint xint(uint x) {
+    uint y;
+    char *a = (char *)&y;
+    a[0] = x;
+    a[1] = x >> 8;
+    a[2] = x >> 16;
+    a[3] = x >> 24;
+    return y;
+}
+
+void rsect(int fsfd, uint sec, void *buf) {
+
+   if(lseek(fsfd, sec * 512L, 0) != sec * 512L){
+    perror("lseek");
+    exit(1);
+  }
+  if(read(fsfd, buf, 512) != 512){
+    perror("read");
+    exit(1);
+  }
 }
