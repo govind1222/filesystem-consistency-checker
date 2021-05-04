@@ -4,7 +4,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <math.h>
 #include <string.h>
 
 #include "../E2/xv6/include/types.h"
@@ -86,15 +85,15 @@ int main(int argc, char *argv[]) {
             }
 
             // make sure it's marked as in use by the bit map
-            /*uint bn = dip[i].addrs[j];
-            char *bitmapBlock = mapResult + (BBLOCK(dip[i].addrs[j], sb->ninodes)) * BSIZE;
-            int index = bn / sizeof(bitmapBlock[0]);
-            int power = (int)(pow(2, bn % sizeof(bitmapBlock[0])) + 0.5);
-            if(!((int)bitmapBlock[index] & power)) {
+            uint bn = dip[i].addrs[j];
+            char *bitmapBlock = mapResult + (BBLOCK(bn, sb->ninodes)) * BSIZE;
+            if(!(bitmapBlock[bn / 8] & (0x1 << (bn % 8)))) {
                 fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
                 exit(1);
-            }*/
+            }
         }
+
+
 
         // if execution reaches here, direct blocks are all valid
         // now need to check indirect blocks
@@ -120,8 +119,16 @@ int main(int argc, char *argv[]) {
 
             // checks to see if indirect block is pointing to a valid data
             // block address
-            if(indirectBn < 0 || indirectBn > sb->nblocks /*|| temp[j] >= NINDIRECT*/) {
+            if(indirectBn < 0 || indirectBn > sb->nblocks) {
                 fprintf(stderr, "ERROR: bad indirect address in inode.\n");
+                exit(1);
+            }
+
+            // makes sure the inode is marked as in use by the
+            // bitmap
+            char *bitmapBlock = mapResult + (BBLOCK(indirectBn, sb->ninodes)) * BSIZE;
+            if(!(bitmapBlock[indirectBn / 8] & (0x1 << (indirectBn % 8)))) {
+                fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
                 exit(1);
             }
         }
@@ -130,6 +137,7 @@ int main(int argc, char *argv[]) {
     de = (struct dirent *)(mapResult + (dip[ROOTINO].addrs[0]) * BSIZE);
     int size = dip[ROOTINO].size / sizeof(struct dirent *);
     for(i = 0; i < size; i++, de++) {
+        // checks to see if . entry has the same inode as itself
         if(strcmp(de->name, ".") == 0) {
             if(de->inum != ROOTINO) {
                 fprintf(stderr, "ERROR: root directory does not exist.\n");
@@ -163,13 +171,12 @@ uint xint(uint x) {
 }
 
 void rsect(int fsfd, uint sec, void *buf) {
-
-   if(lseek(fsfd, sec * 512L, 0) != sec * 512L){
-    perror("lseek");
-    exit(1);
-  }
-  if(read(fsfd, buf, 512) != 512){
-    perror("read");
-    exit(1);
-  }
+    if(lseek(fsfd, sec * 512L, 0) != sec * 512L){
+        perror("lseek");
+        exit(1);
+    }
+    if(read(fsfd, buf, 512) != 512){
+        perror("read");
+        exit(1);
+    }
 }
