@@ -9,18 +9,23 @@
 #include "../E2/xv6/include/types.h"
 #include "../E2/xv6/include/fs.h"
 
-#define stat xv6_stat
-#include "../E2/xv6/include/stat.h"
-#undef stat
+#define T_DIR  1   // Directory
+#define T_FILE 2   // File
+#define T_DEV  3   // Special device
+
+#define DPB (BSIZE / sizeof(struct dirent))
+
+struct superblock *sb;
+struct dinode *dip;
 
 // methods that xv6 used to read indirect block
 uint xint(uint x);
 void rsect(int fsfd, uint sec, void *buf);
 
+uint findInodeInDir(int inum, char *addr, int fd);
+
 int main(int argc, char *argv[]) {
 
-    struct superblock *sb;
-    struct dinode *dip;
     struct dirent *de;
 
     // making sure that there is 1 and only 1 argument
@@ -32,6 +37,7 @@ int main(int argc, char *argv[]) {
 
     // opening the file and throwing an error if open fails
     int fd = open(argv[1], O_RDONLY);
+
     if(fd < 0) {
         fprintf(stderr, "image not found.\n");
         exit(1);
@@ -57,93 +63,18 @@ int main(int argc, char *argv[]) {
 
     int numInodes = sb->ninodes;
     int i, j;
-    // checks each inode to make sure it isn't bad
-    for (i = 0; i < numInodes; i++) {
-        // unallocated
-        if(dip[i].size == 0) {
-            continue;
-        }
-        // invalid size or not of the right type
-        // bad inode error
-        if(dip[i].size < 0 || (dip[i].type != T_FILE && dip[i].type != T_DIR && dip[i].type != T_DEV)) {
-            fprintf(stderr, "ERROR: bad inode.\n");
-            exit(1);
-        }
-
-        // check each address entry in the addrs array
-        for (j = 0; j < NDIRECT; j++) {
-            // data block address not in use
-            if(!dip[i].addrs[j]) {
-                continue;
-            }
-
-            // checks to see if direct block is pointing to a valid data
-            // block address
-            if(dip[i].addrs[j] < 0 || dip[i].addrs[j] > sb->nblocks) {
-                fprintf(stderr, "ERROR: bad direct address in inode.\n");
-                exit(1);
-            }
-
-            // make sure it's marked as in use by the bit map
-            uint bn = dip[i].addrs[j];
-            char *bitmapBlock = mapResult + (BBLOCK(bn, sb->ninodes)) * BSIZE;
-            if(!(bitmapBlock[bn / 8] & (0x1 << (bn % 8)))) {
-                fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
-                exit(1);
-            }
-        }
-
-
-
-        // if execution reaches here, direct blocks are all valid
-        // now need to check indirect blocks
-        if(!dip[i].addrs[NDIRECT]) {
-            continue;
-        }
-
-        uint temp = dip[i].addrs[NDIRECT];
-        uint indirect[NINDIRECT];
-
-        // reads the indirect block address
-        uint y = xint(temp);
-        rsect(fd, y, (char *)indirect);
-
-        // loops through all NINDIRECT addresses and checks to see if they are
-        // a valid block number
-        for (j = 0; j < NINDIRECT; j++) {
-            int indirectBn = indirect[j];
-            // indirect block address not in use
-            if(!indirectBn) {
-                continue;
-            }
-
-            // checks to see if indirect block is pointing to a valid data
-            // block address
-            if(indirectBn < 0 || indirectBn > sb->nblocks) {
-                fprintf(stderr, "ERROR: bad indirect address in inode.\n");
-                exit(1);
-            }
-
-            // makes sure the inode is marked as in use by the
-            // bitmap
-            char *bitmapBlock = mapResult + (BBLOCK(indirectBn, sb->ninodes)) * BSIZE;
-            if(!(bitmapBlock[indirectBn / 8] & (0x1 << (indirectBn % 8)))) {
-                fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
-                exit(1);
-            }
-        }
-    }
 
     de = (struct dirent *)(mapResult + (dip[ROOTINO].addrs[0]) * BSIZE);
-    int size = dip[ROOTINO].size / sizeof(struct dirent *);
+    int size = dip[ROOTINO].size / sizeof(struct dirent *), c = 0;
     for(i = 0; i < size; i++, de++) {
         // checks to see if . entry has the same inode as itself
-        if(strcmp(de->name, ".") == 0) {
+        if(c < 2 && (strcmp(de->name, ".") == 0 || strcmp(de->name, "..") == 0)) {
             if(de->inum != ROOTINO) {
                 fprintf(stderr, "ERROR: root directory does not exist.\n");
                 exit(1);
             }
-            break;
+            else
+                c++;
         }
     }
 
@@ -153,6 +84,127 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "ERROR: root directory does not exist.\n");
         exit(1);
     }
+
+    int checkUsedBlocks[sb->nblocks];
+    int startBlock = dip[ROOTINO].addrs[0];
+
+    for (i = 0; i < sb->nblocks; i++) {
+        checkUsedBlocks[i] = 0;
+    }
+
+        // checks each inode to make sure it isn't bad
+        for (i = 0; i < numInodes; i++)
+        {
+
+            // unallocated
+            if (dip[i].size == 0)
+            {
+                continue;
+            }
+
+            // invalid size or not of the right type
+            // bad inode error
+            if (dip[i].size < 0 || (dip[i].type != T_FILE && dip[i].type != T_DIR && dip[i].type != T_DEV))
+            {
+                fprintf(stderr, "ERROR: bad inode.\n");
+                exit(1);
+            }
+
+            // check each address entry in the addrs array
+            for (j = 0; j < NDIRECT; j++)
+            {
+                // data block address not in use
+                if (!(dip[i].addrs[j]))
+                {
+                    continue;
+                }
+
+                // checks to see if direct block is pointing to a valid data
+                // block address
+                if (dip[i].addrs[j] < 0 || dip[i].addrs[j] > sb->nblocks)
+                {
+                    fprintf(stderr, "ERROR: bad direct address in inode.\n");
+                    exit(1);
+                }
+
+                // make sure it's marked as in use by the bit map
+                uint bn = dip[i].addrs[j];
+                char *bitmapBlock = mapResult + (BBLOCK(bn, sb->ninodes)) * BSIZE;
+                if (!(bitmapBlock[bn / 8] & (0x1 << (bn % 8))))
+                {
+                    fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
+                    exit(1);
+                }
+
+                int index = bn - startBlock;
+                if (checkUsedBlocks[index])
+                {
+                    fprintf(stderr, "ERROR: direct address used more than once.\n");
+                    exit(1);
+                }
+                checkUsedBlocks[index] = 1;
+            }
+
+            // if execution reaches here, direct blocks are all valid
+            // now need to check indirect blocks
+            if (!(dip[i].addrs[NDIRECT]))
+            {
+                goto endOfLoop;
+            }
+
+            uint temp = dip[i].addrs[NDIRECT];
+            uint indirect[NINDIRECT];
+
+            // reads the indirect block address
+            uint y = xint(temp);
+            rsect(fd, y, (char *)indirect);
+
+            // loops through all NINDIRECT addresses and checks to see if they are
+            // a valid block number
+            for (j = 0; j < NINDIRECT; j++)
+            {
+                int indirectBn = indirect[j];
+                // indirect block address not in use
+                if (!indirectBn)
+                {
+                    continue;
+                }
+
+                // checks to see if indirect block is pointing to a valid data
+                // block address
+                if (indirectBn < 0 || indirectBn > sb->nblocks)
+                {
+                    fprintf(stderr, "ERROR: bad indirect address in inode.\n");
+                    exit(1);
+                }
+
+                // makes sure the inode is marked as in use by the
+                // bitmap
+                char *bitmapBlock = mapResult + (BBLOCK(indirectBn, sb->ninodes)) * BSIZE;
+                if (!(bitmapBlock[indirectBn / 8] & (0x1 << (indirectBn % 8))))
+                {
+                    fprintf(stderr, "ERROR: address used by inode but marked free in bitmap.\n");
+                    exit(1);
+                }
+
+                int index = indirectBn - startBlock;
+                if (checkUsedBlocks[index]) {
+                    fprintf(stderr, "ERROR: indirect address used more than once.\n");
+                    exit(1);
+                }
+                checkUsedBlocks[index] = 1;
+            }
+        endOfLoop:
+            // checks to see if inode is found in directory
+            if (i != ROOTINO && !findInodeInDir(i, mapResult, fd))
+            {
+                //fprintf(stderr, "ERROR: inode marked use but not found in a directory.\n");
+                //exit(1);
+            }
+        }
+
+    //printf("%d\n", count);
+
 
     return 0;
 }
@@ -180,3 +232,52 @@ void rsect(int fsfd, uint sec, void *buf) {
         exit(1);
     }
 }
+
+// this function checks to see if the given inode number
+// is referred to in some directory. returns 1 if true, 0 otherwise
+uint findInodeInDir(int inum, char* addr, int fd) {
+    //printf("checking for inode %d\n", inum);
+    struct dirent *de = (struct dirent *)(addr+dip[ROOTINO].addrs[0] * BSIZE);
+    int i, j, k;
+    for (i = 0; i <= sb->ninodes; i++) {
+        if (i != inum && dip[i].size && dip[i].type == T_DIR) {
+            for (j = 0; j < NDIRECT; j++) {
+                if(!dip[i].addrs[j]) {
+                    continue;
+                }
+                de = (struct dirent *) (addr + (dip[i].addrs[j])*BSIZE);
+                for(k = 0; k < DPB; k++, de++) {
+
+                    if(de->inum == inum && dip[de->inum].size > 0) {
+                        //printf("%d %s", de->inum, de->name);
+                        //return 1;
+                    }
+                }
+            }
+            uint temp = dip[i].addrs[NDIRECT];
+            if(!temp) continue;
+            uint indirect[NINDIRECT];
+            // reads the indirect block address
+            uint y = xint(temp);
+            rsect(fd, y, (char *)indirect);
+            for(j = 0; j < NINDIRECT; j++) {
+                int indirectBn = indirect[j];
+                if(!indirectBn) {
+                    continue;
+                }
+                de = (struct dirent *) (addr + (indirectBn)*BSIZE);
+                for(k = 0; k < DPB; k++, de++) {
+                    //printf("%d ", de->inum);
+                    if(de->inum == inum && dip[de->inum].size > 0) {
+                        //printf("%d %s", de->inum, de->name);
+                        //return 1;
+                    }
+                }
+            }
+            //printf("\n");
+        }
+
+    }
+    return 0;
+}
+
